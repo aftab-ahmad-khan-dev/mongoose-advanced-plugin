@@ -1,0 +1,32 @@
+#!/bin/bash
+# Local pre-push malware guard. Blocks `git push` if a known signature is present.
+# Enable in a repo with:  git config core.hooksPath .githooks
+set -uo pipefail
+found=0
+EXC=(--exclude-dir=node_modules --exclude-dir=.git
+     --exclude=malware-guard.yml --exclude=pre-push)
+
+# Variant A
+grep -rIlF "${EXC[@]}" 'while(!![])' . >/dev/null 2>&1 && { echo "pre-push: BLOCKED — Variant A (while(!![]))"; found=1; }
+# VSCode auto-run abuse
+grep -rIl "${EXC[@]}" -E '"runOn"[[:space:]]*:[[:space:]]*"folderOpen"' . >/dev/null 2>&1 && { echo "pre-push: BLOCKED — VSCode folderOpen task"; found=1; }
+grep -rIlF "${EXC[@]}" 'task.allowAutomaticTasks' . >/dev/null 2>&1 && { echo "pre-push: BLOCKED — allowAutomaticTasks"; found=1; }
+# Variant C (atob -> fetch -> eval)
+grep -rIlF "${EXC[@]}" 'AUTH_API_KEY' . >/dev/null 2>&1 && { echo "pre-push: BLOCKED — Variant C (AUTH_API_KEY)"; found=1; }
+while IFS= read -r f; do
+  grep -qF 'eval(' "$f" && { echo "pre-push: BLOCKED — atob()+eval() RCE loader in $f"; found=1; }
+done < <(grep -rIlF "${EXC[@]}" 'atob(' . 2>/dev/null)
+# Variant A/B fake fonts
+while IFS= read -r f; do
+  file "$f" | grep -qiE 'ASCII|UTF-8|text' && { echo "pre-push: BLOCKED — fake font (text): $f"; found=1; }
+done < <(find . \( -path ./node_modules -o -path ./.git \) -prune -o \
+           -type f \( -iname '*.woff' -o -iname '*.woff2' -o -iname '*.ttf' \
+             -o -iname '*.otf' -o -iname '*.eot' -o -iname '*.orc' -o -iname '*.lkf' \) -print)
+# Variant B padding
+grep -rIlP "${EXC[@]}" --include='*.js' --include='*.cjs' --include='*.mjs' --include='*.ts' --include='*.tsx' --include='*.jsx' '[ \t]{100,}\S' . >/dev/null 2>&1 && { echo "pre-push: BLOCKED — hidden padding payload"; found=1; }
+
+if [ "$found" = "1" ]; then
+  echo "pre-push: push aborted. Remove the malware (or run the cleaner) and retry."
+  exit 1
+fi
+exit 0
